@@ -198,15 +198,15 @@ var reflib = module.exports = {
 			emitter.emit('progress', cur, max);
 		}, 200, { trailing: false }),
 
-		supported.driver.parse(input)
-			.on('error', function(err) {
-				if (callback) {
-					callback(err);
-				} else {
-					reflibEmitter.emit('error', err);
-				}
-			})
-			.on('ref', function(ref) {
+					supported.driver.parse(input)
+					.on('error', function(err) {
+						if (callback) {
+							callback(err);
+						} else {
+							reflibEmitter.emit('error', err);
+						}
+					})
+					.on('ref', function(ref) {
 				// Apply fixes {{{
 				if (settings.fixes.authors) ref = self.fix.authors(ref, options);
 				if (settings.fixes.dates) ref = self.fix.dates(ref, options);
@@ -218,11 +218,11 @@ var reflib = module.exports = {
 				} else {
 					reflibEmitter.emit('ref', ref);
 				}
-			})
-			.on('progress', function(cur, max) {
-				emitProgress(cur, max, reflibEmitter);
-			})
-			.on('end', function() {
+				})
+				.on('progress', function(cur, max) {
+					emitProgress(cur, max, reflibEmitter);
+				})
+				.on('end', function() {
 				if (callback) {
 					callback(null, refs);
 				} else {
@@ -233,6 +233,72 @@ var reflib = module.exports = {
 		return reflibEmitter;
 	},
 
+	/**
+	 * Version of Parse which is a Generator instead of emitting events (if the format driver supports it)
+	 * NOTE: RIS and MEDLINE have generators implemented, the XML would be harder to convert.
+	 *
+	 * The Generator pattern is much more friendly to async handlers, as the caller drives the process at their rate.
+	 * The EventEmitter pattern ignores handler promises, so can overwhelm the caller and hog the Node event loop,
+	 * which can prevent the handlers' own async calls (e.g. to persistence) from ever resolving, or timing out.
+	 *
+	 * @throws Error Any errors from the drivers (does not emit error events like parse)
+	 * @return {Generator} a generator which yields a "ref" on each next() until result.done is true
+	 * 	e.g.
+	 * 		const g= reflib.parseGenerator(format, filedata)
+	 * 		const next = g.next()
+	 * 		if (!next.done) ref = next.value
+	 */
+	parseGenerator: function* (format, input, options, callback) {
+		// Deal with arguments {{{
+		if (format && typeof format == 'string' && typeof options == 'object' && typeof callback == 'function') {
+			// No changes
+		} else if (typeof format == 'string' && input && typeof options == 'function') { // Omitted options
+			callback = options;
+			options = {};
+		} else if (typeof format == 'string' && input) { // Omitted options + callback
+			// No changes
+		} else {
+			throw new Error('Parse must be called in the form: parse(format, input, [options], [callback])');
+		}
+		// }}}
+
+		var supported = reflib.supported.find(s => s.id == format);
+		if (!supported) throw new Error('Format is unsupported: ' + format);
+
+		var settings = {
+			fixes: {
+				authors: false,
+				dates: false,
+				pages: false,
+			},
+			...options,
+		};
+
+		var refs = [];
+
+		// wrap generator to apply options
+		const driverGen = supported.driver.parse(input)
+		let more = true, next
+		while(more){
+			next = driverGen.next()
+			if(!next.done) {
+				ref = next.value
+
+				// Apply fixes {{{
+				if (settings.fixes.authors) ref = self.fix.authors(ref, options);
+				if (settings.fixes.dates) ref = self.fix.dates(ref, options);
+				if (settings.fixes.pages) ref = self.fix.pages(ref, options);
+				// }}}
+
+				if (callback) refs.push(ref);
+				else yield ref;
+			}
+			else { // done
+				more = false
+				if (callback) callback(null, refs);
+			}
+		}
+	},
 
 	/**
 	* Wrapper around parse() which opens a file as as stream and parses it automatically
